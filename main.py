@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
 import pandas as pd
 import os
+from routes.home import router as home_router
 
 app = FastAPI(title="Dashboard API", version="1.0.0")
 
@@ -25,6 +26,9 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "message": "API está funcionando corretamente"}
+
+# incluir rotas da Home
+app.include_router(home_router)
 
 @app.get("/api/dados")
 async def get_all_data():
@@ -130,5 +134,5 @@ async def get_columns(nome_arquivo: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)
 
