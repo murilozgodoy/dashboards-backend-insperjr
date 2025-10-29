@@ -17,6 +17,13 @@ def _parse_date(d: Optional[str], default: datetime) -> datetime:
         return default
     return datetime.fromisoformat(d)
 
+def _normalize_range(inicio: datetime, fim: datetime) -> tuple[datetime, datetime]:
+    # garante que o fim inclua o dia inteiro quando vier sem hora (00:00:00)
+    end = fim
+    if end.hour == 0 and end.minute == 0 and end.second == 0 and end.microsecond == 0:
+        end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return inicio, end
+
 def _filter_period(df: pd.DataFrame, inicio: datetime, fim: datetime) -> pd.DataFrame:
     if 'order_datetime' not in df.columns:
         return df.iloc[0:0]
@@ -39,6 +46,7 @@ def get_kpis(inicio: Optional[str] = None, fim: Optional[str] = None):
     d_inicio_default, d_fim_default = _default_range()
     d_inicio = _parse_date(inicio, d_inicio_default)
     d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
 
     atual = _filter_period(df, d_inicio, d_fim)
 
@@ -80,6 +88,15 @@ def get_kpis(inicio: Optional[str] = None, fim: Optional[str] = None):
         }
     }
 
+@router.get("/date-bounds")
+def date_bounds():
+    df = load_data()
+    if 'order_datetime' not in df.columns or len(df) == 0:
+        return {"min": None, "max": None}
+    min_dt = pd.to_datetime(df['order_datetime']).min()
+    max_dt = pd.to_datetime(df['order_datetime']).max()
+    return {"min": str(pd.to_datetime(min_dt).date()), "max": str(pd.to_datetime(max_dt).date())}
+
 @router.get("/receita-tempo")
 def receita_tempo(
     granularidade: Literal['dia','semana','mes'] = 'dia',
@@ -90,6 +107,7 @@ def receita_tempo(
     d_inicio_default, d_fim_default = _default_range()
     d_inicio = _parse_date(inicio, d_inicio_default)
     d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
     cur = _filter_period(df, d_inicio, d_fim)
     if len(cur) == 0:
         return {"granularidade": granularidade, "dados": []}
@@ -128,6 +146,7 @@ def plataformas(
     d_inicio_default, d_fim_default = _default_range()
     d_inicio = _parse_date(inicio, d_inicio_default)
     d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
     cur = _filter_period(df, d_inicio, d_fim)
     if len(cur) == 0 or 'platform' not in cur.columns:
         return {"metric": metric, "plataformas": []}
@@ -187,19 +206,85 @@ def resumo_mensal(mes: Optional[str] = None):
     else:
         plataforma_mais_usada = None
 
-    # Bairro com mais receita
-    if 'bairro_destino' in cur.columns and 'total_brl' in cur.columns:
-        b = cur.groupby('bairro_destino')['total_brl'].sum().sort_values(ascending=False)
-        bairro_top = str(b.index[0]) if len(b) else None
-    else:
-        bairro_top = None
+    bairro_top_pedidos = None
+    bairro_top_receita = None
+    if 'bairro_destino' in cur.columns:
+        # por pedidos
+        b_cnt = cur.groupby('bairro_destino').size().sort_values(ascending=False)
+        bairro_top_pedidos = str(b_cnt.index[0]) if len(b_cnt) else None
+        # por receita (opcional)
+        if 'total_brl' in cur.columns:
+            b_val = cur.groupby('bairro_destino')['total_brl'].sum().sort_values(ascending=False)
+            bairro_top_receita = str(b_val.index[0]) if len(b_val) else None
 
     return {
         "melhor_dia_semana": melhor_dia,
         "horario_pico": horario_pico,
         "plataforma_mais_usada": plataforma_mais_usada,
-        "bairro_top_receita": bairro_top,
+        "bairro_top_pedidos": bairro_top_pedidos,
+        "bairro_top_receita": bairro_top_receita,
         "mes": start.strftime('%Y-%m')
+    }
+
+@router.get("/resumo-periodo")
+def resumo_periodo(inicio: Optional[str] = None, fim: Optional[str] = None):
+    df = load_data()
+    d_inicio_default, d_fim_default = _default_range()
+    d_inicio = _parse_date(inicio, d_inicio_default)
+    d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    cur = _filter_period(df, d_inicio, d_fim)
+    if len(cur) == 0:
+        return {
+            "melhor_dia_semana": None,
+            "horario_pico": None,
+            "plataforma_mais_usada": None,
+            "bairro_top_pedidos": None,
+            "bairro_top_receita": None,
+            "inicio": d_inicio.date().isoformat(),
+            "fim": d_fim.date().isoformat()
+        }
+
+    # Melhor dia da semana (por pedidos)
+    cur = cur.copy()
+    cur['dow'] = cur['order_datetime'].dt.day_name(locale='pt_BR') if hasattr(cur['order_datetime'].dt, 'day_name') else cur['order_datetime'].dt.dayofweek
+    by_dow = cur.groupby('dow').size().sort_values(ascending=False)
+    melhor_dia = by_dow.index[0] if len(by_dow) else None
+
+    # Horário de pico (hora cheia)
+    cur['hora'] = cur['order_datetime'].dt.hour
+    by_hour = cur.groupby('hora').size().sort_values(ascending=False)
+    if len(by_hour):
+        h = int(by_hour.index[0])
+        horario_pico = f"{h:02d}:00-{(h+1)%24:02d}:00"
+    else:
+        horario_pico = None
+
+    # Plataforma mais usada
+    if 'platform' in cur.columns:
+        plat = cur.groupby('platform').size().sort_values(ascending=False)
+        plataforma_mais_usada = str(plat.index[0]) if len(plat) else None
+    else:
+        plataforma_mais_usada = None
+
+    # Bairros topo
+    bairro_top_pedidos = None
+    bairro_top_receita = None
+    if 'bairro_destino' in cur.columns:
+        b_cnt = cur.groupby('bairro_destino').size().sort_values(ascending=False)
+        bairro_top_pedidos = str(b_cnt.index[0]) if len(b_cnt) else None
+        if 'total_brl' in cur.columns:
+            b_val = cur.groupby('bairro_destino')['total_brl'].sum().sort_values(ascending=False)
+            bairro_top_receita = str(b_val.index[0]) if len(b_val) else None
+
+    return {
+        "melhor_dia_semana": melhor_dia,
+        "horario_pico": horario_pico,
+        "plataforma_mais_usada": plataforma_mais_usada,
+        "bairro_top_pedidos": bairro_top_pedidos,
+        "bairro_top_receita": bairro_top_receita,
+        "inicio": d_inicio.date().isoformat(),
+        "fim": d_fim.date().isoformat()
     }
 
 
