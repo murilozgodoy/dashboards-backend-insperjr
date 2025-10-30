@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 import pandas as pd
 import os
 from routes.home import router as home_router
+from routes.geografica import router as geografica_router
 
 app = FastAPI(title="Dashboard API", version="1.0.0")
 
@@ -29,6 +30,9 @@ async def health_check():
 
 # incluir rotas da Home
 app.include_router(home_router)
+
+# incluir rotas da Geografia
+app.include_router(geografica_router)
 
 @app.get("/api/dados")
 async def get_all_data():
