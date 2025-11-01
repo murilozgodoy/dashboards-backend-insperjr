@@ -5,6 +5,7 @@ import pandas as pd
 import os
 from routes.home import router as home_router
 from routes.geografica import router as geografica_router
+from routes.operacional import router as operacional_router
 
 app = FastAPI(title="Dashboard API", version="1.0.0")
 
@@ -33,6 +34,9 @@ app.include_router(home_router)
 
 # incluir rotas da Geografia
 app.include_router(geografica_router)
+
+# incluir rotas Operacional
+app.include_router(operacional_router)
 
 @app.get("/api/dados")
 async def get_all_data():
