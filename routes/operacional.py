@@ -7,6 +7,13 @@ from services.data_loader import load_data
 
 router = APIRouter(prefix="/api/operacional", tags=["operacional"])
 
+def safe_mean(series: pd.Series) -> float:
+    """Calcula média de forma segura, retornando 0.0 se vazio ou NaN"""
+    if len(series) == 0:
+        return 0.0
+    mean_val = series.mean()
+    return float(mean_val) if pd.notna(mean_val) else 0.0
+
 def _default_range() -> tuple[datetime, datetime]:
     fim = datetime.now()
     inicio = fim - timedelta(days=30)
@@ -54,12 +61,6 @@ def get_kpis(
             "desempenho_eta": 0.0
         }
     
-    def safe_mean(series: pd.Series) -> float:
-        if len(series) == 0:
-            return 0.0
-        mean_val = series.mean()
-        return float(mean_val) if pd.notna(mean_val) else 0.0
-    
     #Tempo médio de preparo
     if 'tempo_preparo_minutos' in atual.columns:
         tempo_preparo_medio = safe_mean(atual['tempo_preparo_minutos'])
@@ -83,7 +84,7 @@ def get_kpis(
     else:
         precisao_eta_pct = 0.0
     
-    #Taxa de atraso (pedidos com atraso > threshold_minutos)
+    #Taxa de atraso
     if 'eta_minutes_quote' in atual.columns and 'actual_delivery_minutes' in atual.columns:
         valid_mask = atual['eta_minutes_quote'].notna() & atual['actual_delivery_minutes'].notna()
         if valid_mask.sum() > 0:
@@ -163,75 +164,6 @@ def tempo_preparo_tempo(
         })
     
     return {"granularidade": granularidade, "dados": dados}
-
-@router.get("/tempo-entrega-distancia")
-def tempo_entrega_distancia(
-    inicio: Optional[str] = None,
-    fim: Optional[str] = None
-):
-    """Tempo de entrega por faixa de distância"""
-    df = load_data()
-    d_inicio_default, d_fim_default = _default_range()
-    d_inicio = _parse_date(inicio, d_inicio_default)
-    d_fim = _parse_date(fim, d_fim_default)
-    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
-    
-    cur = _filter_period(df, d_inicio, d_fim)
-    if len(cur) == 0 or 'distance_km' not in cur.columns or 'actual_delivery_minutes' not in cur.columns:
-        return {"dados": []}
-    
-
-    def faixa_distancia(km):
-        if pd.isna(km):
-            return "Sem distância"
-        km_float = float(km)
-        if km_float < 2:
-            return "0-2 km"
-        elif km_float < 5:
-            return "2-5 km"
-        elif km_float < 10:
-            return "5-10 km"
-        else:
-            return "10+ km"
-    
-    cur['faixa'] = cur['distance_km'].apply(faixa_distancia)
-    agg = cur.groupby('faixa')['actual_delivery_minutes'].agg(['mean', 'count']).reset_index()
-    
-    dados = []
-    for _, row in agg.iterrows():
-        dados.append({
-            "faixa": str(row['faixa']),
-            "tempo_medio": float(row['mean']) if pd.notna(row['mean']) else 0.0,
-            "quantidade": int(row['count'])
-        })
-    
-    return {"dados": dados}
-
-@router.get("/eta-vs-real")
-def eta_vs_real(
-    inicio: Optional[str] = None,
-    fim: Optional[str] = None
-):
-    """Comparação entre ETA estimado e tempo real"""
-    df = load_data()
-    d_inicio_default, d_fim_default = _default_range()
-    d_inicio = _parse_date(inicio, d_inicio_default)
-    d_fim = _parse_date(fim, d_fim_default)
-    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
-    
-    cur = _filter_period(df, d_inicio, d_fim)
-    if len(cur) == 0 or 'eta_minutes_quote' not in cur.columns or 'actual_delivery_minutes' not in cur.columns:
-        return {"dados": []}
-    
-    eta_medio = float(cur['eta_minutes_quote'].mean()) if pd.notna(cur['eta_minutes_quote'].mean()) else 0.0
-    real_medio = float(cur['actual_delivery_minutes'].mean()) if pd.notna(cur['actual_delivery_minutes'].mean()) else 0.0
-    
-    return {
-        "dados": [
-            {"tipo": "ETA Estimado", "tempo": eta_medio},
-            {"tipo": "Tempo Real", "tempo": real_medio}
-        ]
-    }
 
 @router.get("/distribuicao-tempos")
 def distribuicao_tempos(
@@ -365,12 +297,12 @@ def precisao_eta_hora(
     
     return {"dados": dados}
 
-@router.get("/tempos-por-modo")
-def tempos_por_modo(
+@router.get("/analise-por-periodo")
+def analise_por_periodo(
     inicio: Optional[str] = None,
     fim: Optional[str] = None
 ):
-    """Tempos médios por modo de pedido"""
+   
     df = load_data()
     d_inicio_default, d_fim_default = _default_range()
     d_inicio = _parse_date(inicio, d_inicio_default)
@@ -379,24 +311,266 @@ def tempos_por_modo(
     
     cur = _filter_period(df, d_inicio, d_fim)
     
-    if len(cur) == 0 or 'order_mode' not in cur.columns:
+    if len(cur) == 0:
         return {"dados": []}
     
+    def classificar_periodo(hora: int) -> str:
+        if hora >= 0 and hora < 6:
+            return "Madrugada"
+        elif hora >= 6 and hora < 12:
+            return "Manhã"
+        elif hora >= 12 and hora < 18:
+            return "Tarde"
+        else: 
+            return "Noite"
+    
+    #extrair hora do datetime
+    if 'order_datetime' in cur.columns:
+        cur['hora'] = pd.to_datetime(cur['order_datetime']).dt.hour
+        cur['periodo'] = cur['hora'].apply(classificar_periodo)
+    elif 'hora' in cur.columns:
+        cur['periodo'] = cur['hora'].apply(classificar_periodo)
+    else:
+        return {"dados": []}
+    
+    periodos = ['Madrugada', 'Manhã', 'Tarde', 'Noite']
     dados = []
-    for modo in cur['order_mode'].unique():
-        if pd.isna(modo):
-            continue
-        modo_df = cur[cur['order_mode'] == modo]
+    
+    for periodo in periodos:
+        periodo_df = cur[cur['periodo'] == periodo]
         
-        preparo_medio = float(modo_df['tempo_preparo_minutos'].mean()) if 'tempo_preparo_minutos' in modo_df.columns else 0.0
-        entrega_medio = float(modo_df['actual_delivery_minutes'].mean()) if 'actual_delivery_minutes' in modo_df.columns else 0.0
+        if len(periodo_df) == 0:
+            dados.append({
+                "periodo": periodo,
+                "quantidade": 0,
+                "tempo_preparo_medio": 0.0,
+                "tempo_entrega_medio": 0.0,
+                "taxa_atraso_pct": 0.0,
+                "precisao_eta_pct": 0.0
+            })
+            continue
+        
+       
+        quantidade = len(periodo_df)
+        
+    
+        preparo_medio = safe_mean(periodo_df['tempo_preparo_minutos']) if 'tempo_preparo_minutos' in periodo_df.columns else 0.0
+        
+        #Tempo de entrega (apenas para entregas)
+        if 'actual_delivery_minutes' in periodo_df.columns:
+            entrega_df = periodo_df[periodo_df['actual_delivery_minutes'].notna() & (periodo_df['actual_delivery_minutes'] > 0)]
+            entrega_medio = safe_mean(entrega_df['actual_delivery_minutes']) if len(entrega_df) > 0 else 0.0
+        else:
+            entrega_medio = 0.0
+        
+        #Taxa de atraso (ETA vs Real)
+        taxa_atraso = 0.0
+        if 'eta_minutes_quote' in periodo_df.columns and 'actual_delivery_minutes' in periodo_df.columns:
+            valid_mask = periodo_df['eta_minutes_quote'].notna() & periodo_df['actual_delivery_minutes'].notna()
+            if valid_mask.sum() > 0:
+                atrasos = (periodo_df.loc[valid_mask, 'actual_delivery_minutes'] > periodo_df.loc[valid_mask, 'eta_minutes_quote']).sum()
+                taxa_atraso = (atrasos / valid_mask.sum()) * 100
+        
+        # Precisão do ETA (diferença <= 5 min)
+        precisao_eta = 0.0
+        if 'eta_minutes_quote' in periodo_df.columns and 'actual_delivery_minutes' in periodo_df.columns:
+            valid_mask = periodo_df['eta_minutes_quote'].notna() & periodo_df['actual_delivery_minutes'].notna()
+            if valid_mask.sum() > 0:
+                diff = abs(periodo_df.loc[valid_mask, 'actual_delivery_minutes'] - periodo_df.loc[valid_mask, 'eta_minutes_quote'])
+                precisos = (diff <= 5).sum()
+                precisao_eta = (precisos / valid_mask.sum()) * 100
         
         dados.append({
-            "modo": str(modo),
+            "periodo": periodo,
+            "quantidade": quantidade,
             "tempo_preparo_medio": preparo_medio,
             "tempo_entrega_medio": entrega_medio,
-            "quantidade": int(len(modo_df))
+            "taxa_atraso_pct": taxa_atraso,
+            "precisao_eta_pct": precisao_eta
         })
     
     return {"dados": dados}
+
+@router.get("/eta-vs-real-scatter")
+def eta_vs_real_scatter(
+    inicio: Optional[str] = None,
+    fim: Optional[str] = None,
+    limit: int = Query(1000, description="Limite de pontos no scatter (amostra)")
+):
+  
+    df = load_data()
+    d_inicio_default, d_fim_default = _default_range()
+    d_inicio = _parse_date(inicio, d_inicio_default)
+    d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    
+    cur = _filter_period(df, d_inicio, d_fim)
+    
+    if len(cur) == 0 or 'eta_minutes_quote' not in cur.columns or 'actual_delivery_minutes' not in cur.columns:
+        return {"pontos": []}
+    
+    valid_mask = cur['eta_minutes_quote'].notna() & cur['actual_delivery_minutes'].notna()
+    valid = cur.loc[valid_mask, ['eta_minutes_quote', 'actual_delivery_minutes']].copy()
+    
+    if len(valid) == 0:
+        return {"pontos": []}
+    
+    
+    if len(valid) > limit:
+        valid = valid.sample(n=limit, random_state=42)
+    
+    pontos = []
+    for _, row in valid.iterrows():
+        pontos.append({
+            "eta": float(row['eta_minutes_quote']),
+            "real": float(row['actual_delivery_minutes'])
+        })
+    
+    return {"pontos": pontos}
+
+@router.get("/tempos-por-hora")
+def tempos_por_hora(
+    inicio: Optional[str] = None,
+    fim: Optional[str] = None
+):
+    
+    df = load_data()
+    d_inicio_default, d_fim_default = _default_range()
+    d_inicio = _parse_date(inicio, d_inicio_default)
+    d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    
+    cur = _filter_period(df, d_inicio, d_fim)
+    
+    if len(cur) == 0 or 'order_datetime' not in cur.columns:
+        return {"dados": []}
+    
+    cur = cur.copy()
+    cur['hora'] = cur['order_datetime'].dt.hour
+    
+    dados = []
+    for hora in range(24):
+        hora_df = cur[cur['hora'] == hora]
+        if len(hora_df) == 0:
+            continue
+        
+        preparo_medio = float(hora_df['tempo_preparo_minutos'].mean()) if 'tempo_preparo_minutos' in hora_df.columns and hora_df['tempo_preparo_minutos'].notna().any() else 0.0
+        entrega_medio = float(hora_df['actual_delivery_minutes'].mean()) if 'actual_delivery_minutes' in hora_df.columns and hora_df['actual_delivery_minutes'].notna().any() else 0.0
+        
+        dados.append({
+            "hora": hora,
+            "tempo_preparo_medio": preparo_medio,
+            "tempo_entrega_medio": entrega_medio,
+            "quantidade": int(len(hora_df))
+        })
+    
+    return {"dados": dados}
+
+@router.get("/estatisticas-tempos")
+def estatisticas_tempos(
+    inicio: Optional[str] = None,
+    fim: Optional[str] = None
+):
+
+    df = load_data()
+    d_inicio_default, d_fim_default = _default_range()
+    d_inicio = _parse_date(inicio, d_inicio_default)
+    d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    
+    cur = _filter_period(df, d_inicio, d_fim)
+    
+    def calc_stats(series: pd.Series) -> dict:
+        if len(series) == 0 or series.notna().sum() == 0:
+            return {"min": 0.0, "max": 0.0, "media": 0.0, "p50": 0.0, "p75": 0.0, "p95": 0.0}
+        valid = series.dropna()
+        return {
+            "min": float(valid.min()),
+            "max": float(valid.max()),
+            "media": float(valid.mean()),
+            "p50": float(valid.quantile(0.5)),
+            "p75": float(valid.quantile(0.75)),
+            "p95": float(valid.quantile(0.95))
+        }
+    
+    preparo_stats = calc_stats(cur['tempo_preparo_minutos']) if 'tempo_preparo_minutos' in cur.columns else {"min": 0.0, "max": 0.0, "media": 0.0, "p50": 0.0, "p75": 0.0, "p95": 0.0}
+    entrega_stats = calc_stats(cur['actual_delivery_minutes']) if 'actual_delivery_minutes' in cur.columns else {"min": 0.0, "max": 0.0, "media": 0.0, "p50": 0.0, "p75": 0.0, "p95": 0.0}
+    
+    return {
+        "preparo": preparo_stats,
+        "entrega": entrega_stats
+    }
+
+@router.get("/outliers-detalhados")
+def outliers_detalhados(
+    inicio: Optional[str] = None,
+    fim: Optional[str] = None,
+    preparo_min: int = Query(30, description="Limite de minutos para considerar outlier de preparo"),
+    entrega_min: int = Query(60, description="Limite de minutos para considerar outlier de entrega"),
+    limit: int = Query(50, description="Limite de registros retornados")
+):
+  
+    df = load_data()
+    d_inicio_default, d_fim_default = _default_range()
+    d_inicio = _parse_date(inicio, d_inicio_default)
+    d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    
+    cur = _filter_period(df, d_inicio, d_fim)
+    
+    if len(cur) == 0:
+        return {"outliers_preparo": [], "outliers_entrega": [], "resumo": {}}
+    
+    # Outliers de preparo
+    outliers_preparo = []
+    if 'tempo_preparo_minutos' in cur.columns:
+        prep_out = cur[cur['tempo_preparo_minutos'] > preparo_min].copy()
+        prep_out = prep_out.sort_values('tempo_preparo_minutos', ascending=False).head(limit)
+        
+        for _, row in prep_out.iterrows():
+            outliers_preparo.append({
+                "data": row['order_datetime'].isoformat() if pd.notna(row['order_datetime']) else None,
+                "tempo_preparo": float(row['tempo_preparo_minutos']),
+                "tempo_entrega": float(row.get('actual_delivery_minutes', 0)) if pd.notna(row.get('actual_delivery_minutes')) else 0.0,
+                "distancia_km": float(row.get('distance_km', 0)) if pd.notna(row.get('distance_km')) else 0.0,
+                "hora": int(row['order_datetime'].hour) if pd.notna(row['order_datetime']) else None,
+                "bairro": str(row.get('bairro_destino', '')) if pd.notna(row.get('bairro_destino')) else '',
+                "platform": str(row.get('platform', '')) if pd.notna(row.get('platform')) else '',
+                "modo": str(row.get('order_mode', '')) if pd.notna(row.get('order_mode')) else ''
+            })
+    
+  
+    outliers_entrega = []
+    if 'actual_delivery_minutes' in cur.columns:
+        entrega_out = cur[cur['actual_delivery_minutes'] > entrega_min].copy()
+        entrega_out = entrega_out.sort_values('actual_delivery_minutes', ascending=False).head(limit)
+        
+        for _, row in entrega_out.iterrows():
+            outliers_entrega.append({
+                "data": row['order_datetime'].isoformat() if pd.notna(row['order_datetime']) else None,
+                "tempo_preparo": float(row.get('tempo_preparo_minutos', 0)) if pd.notna(row.get('tempo_preparo_minutos')) else 0.0,
+                "tempo_entrega": float(row['actual_delivery_minutes']),
+                "distancia_km": float(row.get('distance_km', 0)) if pd.notna(row.get('distance_km')) else 0.0,
+                "hora": int(row['order_datetime'].hour) if pd.notna(row['order_datetime']) else None,
+                "bairro": str(row.get('bairro_destino', '')) if pd.notna(row.get('bairro_destino')) else '',
+                "platform": str(row.get('platform', '')) if pd.notna(row.get('platform')) else '',
+                "modo": str(row.get('order_mode', '')) if pd.notna(row.get('order_mode')) else ''
+            })
+    
+ 
+    total_pedidos = len(cur)
+    prep_out_count = len(cur[cur['tempo_preparo_minutos'] > preparo_min]) if 'tempo_preparo_minutos' in cur.columns else 0
+    entrega_out_count = len(cur[cur['actual_delivery_minutes'] > entrega_min]) if 'actual_delivery_minutes' in cur.columns else 0
+    
+    return {
+        "outliers_preparo": outliers_preparo,
+        "outliers_entrega": outliers_entrega,
+        "resumo": {
+            "total_pedidos": total_pedidos,
+            "outliers_preparo_count": prep_out_count,
+            "outliers_entrega_count": entrega_out_count,
+            "pct_preparo": (prep_out_count / total_pedidos * 100) if total_pedidos > 0 else 0.0,
+            "pct_entrega": (entrega_out_count / total_pedidos * 100) if total_pedidos > 0 else 0.0
+        }
+    }
 
