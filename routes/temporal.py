@@ -405,3 +405,81 @@ def get_tendencias_diarias(inicio: Optional[str] = None, fim: Optional[str] = No
     
     return {"data": resultado}
 
+@router.get("/previsto-vs-real")
+def get_previsto_vs_real(
+    inicio: Optional[str] = None,
+    fim: Optional[str] = None
+):
+    """Retorna comparação entre pedidos previstos (média histórica) e reais - apenas diário
+    
+    A previsão usa média histórica considerando:
+    1. Dia da semana (mais preciso - padrões semanais são consistentes)
+    2. Fallback para média geral se não houver dados suficientes para um dia da semana
+    """
+    df = load_data()
+    
+    if not inicio or not fim:
+        # Se não tiver datas, pega o último mês
+        d_fim = datetime.now()
+        d_inicio = d_fim.replace(day=1)
+    else:
+        d_inicio = _parse_date(inicio, datetime.now())
+        d_fim = _parse_date(fim, datetime.now())
+        d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    
+    # Filtrar dados do período selecionado
+    mask_periodo = (df['order_datetime'] >= d_inicio) & (df['order_datetime'] <= d_fim)
+    df_periodo = df.loc[mask_periodo].copy()
+    
+    if 'order_datetime' not in df_periodo.columns or len(df_periodo) == 0:
+        return {"data": []}
+    
+    # Agrupar período selecionado por dia
+    df_periodo['periodo'] = df_periodo['order_datetime'].dt.date
+    df_periodo['dia_semana'] = df_periodo['order_datetime'].dt.dayofweek  # 0=segunda, 6=domingo
+    
+    # Pedidos reais por dia
+    real = df_periodo.groupby('periodo').size().reset_index(name='pedidos_real')
+    
+    # Adicionar dia_semana ao real
+    periodo_dia_semana = df_periodo.groupby('periodo')['dia_semana'].first().reset_index()
+    real = real.merge(periodo_dia_semana, on='periodo', how='left')
+    
+    # Para calcular média histórica: pegar dados ANTES do período selecionado
+    df_historico = df.loc[df['order_datetime'] < d_inicio].copy()
+    
+    if len(df_historico) > 0:
+        # Criar colunas para análise
+        df_historico['data'] = df_historico['order_datetime'].dt.date
+        df_historico['dia_semana'] = df_historico['order_datetime'].dt.dayofweek  # 0=segunda, 6=domingo
+        
+        # Contar pedidos por dia no histórico
+        pedidos_por_dia = df_historico.groupby(['dia_semana', 'data']).size().reset_index(name='pedidos')
+        
+        # Calcular a média por dia da semana
+        media_por_dia_semana = pedidos_por_dia.groupby('dia_semana')['pedidos'].mean().reset_index(name='media_pedidos')
+        media_por_dia_semana_dict = media_por_dia_semana.set_index('dia_semana')['media_pedidos'].to_dict()
+        
+        # Calcular média geral como fallback (caso não tenha dados suficientes para um dia da semana)
+        media_geral = pedidos_por_dia['pedidos'].mean()
+        
+        # Mapear dia_semana para os períodos reais (com fallback para média geral)
+        real['pedidos_previsto'] = real['dia_semana'].map(
+            lambda x: round(media_por_dia_semana_dict.get(int(x), media_geral), 2) if pd.notna(x) else round(media_geral, 2)
+        )
+    else:
+        real['pedidos_previsto'] = 0.0
+    
+    # Formatar resultado
+    resultado = []
+    for _, row in real.iterrows():
+        resultado.append({
+            "periodo": str(row['periodo']),
+            "pedidos_real": int(row['pedidos_real']),
+            "pedidos_previsto": float(row['pedidos_previsto'])
+        })
+    
+    resultado.sort(key=lambda x: x['periodo'])
+    
+    return {"data": resultado}
+
