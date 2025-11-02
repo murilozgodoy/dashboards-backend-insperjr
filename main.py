@@ -8,6 +8,7 @@ from routes.geografica import router as geografica_router
 from routes.temporal import router as temporal_router
 from routes.operacional import router as operacional_router
 from routes.rentabilidade import router as rentabilidade_router
+from routes.plataformas import router as plataformas_router
 
 app = FastAPI(title="Dashboard API", version="1.0.0")
 
@@ -44,6 +45,9 @@ app.include_router(operacional_router)
 
 # incluir rotas Rentabilidade
 app.include_router(rentabilidade_router)
+
+# incluir rotas Plataformas
+app.include_router(plataformas_router)
 
 @app.get("/api/dados")
 async def get_all_data():
