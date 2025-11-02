@@ -5,6 +5,7 @@ import pandas as pd
 import os
 from routes.home import router as home_router
 from routes.geografica import router as geografica_router
+from routes.temporal import router as temporal_router
 from routes.operacional import router as operacional_router
 from routes.rentabilidade import router as rentabilidade_router
 
@@ -36,6 +37,8 @@ app.include_router(home_router)
 # incluir rotas da Geografia
 app.include_router(geografica_router)
 
+# incluir rotas da Análise Temporal
+app.include_router(temporal_router)
 # incluir rotas Operacional
 app.include_router(operacional_router)
 
