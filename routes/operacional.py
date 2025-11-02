@@ -275,7 +275,15 @@ def precisao_eta_hora(
     cur = _filter_period(df, d_inicio, d_fim)
     
     if len(cur) == 0 or 'eta_minutes_quote' not in cur.columns or 'actual_delivery_minutes' not in cur.columns:
-        return {"dados": []}
+        #todasas 24 horas com valores zerados
+        dados = []
+        for hora in range(24):
+            dados.append({
+                "hora": hora,
+                "precisao_pct": 0.0,
+                "total_pedidos": 0
+            })
+        return {"dados": dados}
     
     cur = cur.copy()
     cur['hora'] = cur['order_datetime'].dt.hour
@@ -287,13 +295,28 @@ def precisao_eta_hora(
     agg.columns = ['hora', 'dentro_prazo', 'total']
     agg['precisao_pct'] = (agg['dentro_prazo'] / agg['total'] * 100).round(2)
     
-    dados = []
+    #dicionário com os dados calculados
+    dados_dict = {}
     for _, row in agg.iterrows():
-        dados.append({
-            "hora": int(row['hora']),
+        dados_dict[int(row['hora'])] = {
             "precisao_pct": float(row['precisao_pct']),
             "total_pedidos": int(row['total'])
-        })
+        }
+    
+    dados = []
+    for hora in range(24):
+        if hora in dados_dict:
+            dados.append({
+                "hora": hora,
+                "precisao_pct": dados_dict[hora]["precisao_pct"],
+                "total_pedidos": dados_dict[hora]["total_pedidos"]
+            })
+        else:
+            dados.append({
+                "hora": hora,
+                "precisao_pct": 0.0,
+                "total_pedidos": 0
+            })
     
     return {"dados": dados}
 
