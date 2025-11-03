@@ -136,6 +136,74 @@ def ticket_medio_por_bairro(inicio: Optional[str] = None, fim: Optional[str] = N
     
     return {"dados": dados}
 
+@router.get("/volume-completo-por-bairro")
+def volume_completo_por_bairro(inicio: Optional[str] = None, fim: Optional[str] = None, top_n: int = 20):
+    """
+    Retorna volume e satisfação por bairro, ordenado por volume
+    """
+    df = load_data()
+    d_inicio_default, d_fim_default = _default_range()
+    d_inicio = _parse_date(inicio, d_inicio_default)
+    d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    
+    cur = _filter_period(df, d_inicio, d_fim)
+    
+    if len(cur) == 0 or 'bairro_destino' not in cur.columns:
+        return {"dados": []}
+    
+    # Filtrar registros com status entregue
+    if 'status' in cur.columns:
+        cur = cur[cur['status'].str.lower() == 'delivered']
+    
+    grouped = cur.groupby('bairro_destino')
+    volume = grouped.size().sort_values(ascending=False).head(top_n)
+    satisfacao_media = grouped['satisfacao_nivel'].mean() if 'satisfacao_nivel' in cur.columns else pd.Series(dtype=float)
+    
+    dados = []
+    for bairro in volume.index:
+        item = {"bairro": str(bairro), "volume": int(volume[bairro])}
+        if bairro in satisfacao_media.index and pd.notna(satisfacao_media[bairro]):
+            item["satisfacao"] = float(satisfacao_media[bairro])
+        dados.append(item)
+    
+    return {"dados": dados}
+
+@router.get("/receita-distancia-por-bairro")
+def receita_distancia_por_bairro(inicio: Optional[str] = None, fim: Optional[str] = None, top_n: int = 20):
+    """
+    Retorna receita e distância média por bairro, ordenado por receita (top N)
+    """
+    df = load_data()
+    d_inicio_default, d_fim_default = _default_range()
+    d_inicio = _parse_date(inicio, d_inicio_default)
+    d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    
+    cur = _filter_period(df, d_inicio, d_fim)
+    
+    if len(cur) == 0 or 'bairro_destino' not in cur.columns or 'total_brl' not in cur.columns:
+        return {"dados": []}
+    
+    # Filtrar registros com status entregue
+    if 'status' in cur.columns:
+        cur = cur[cur['status'].str.lower() == 'delivered']
+    
+    cur = cur.dropna(subset=['total_brl'])
+    
+    grouped = cur.groupby('bairro_destino')
+    receita = grouped['total_brl'].sum().sort_values(ascending=False).head(top_n)
+    distancia_media = grouped['distance_km'].mean() if 'distance_km' in cur.columns else pd.Series(dtype=float)
+    
+    dados = []
+    for bairro in receita.index:
+        item = {"bairro": str(bairro), "receita": float(receita[bairro])}
+        if bairro in distancia_media.index and pd.notna(distancia_media[bairro]):
+            item["distancia_media"] = float(distancia_media[bairro])
+        dados.append(item)
+    
+    return {"dados": dados}
+
 @router.get("/satisfacao-por-bairro")
 def satisfacao_por_bairro(inicio: Optional[str] = None, fim: Optional[str] = None, top_n: int = 20):
     """
@@ -387,6 +455,95 @@ def valor_por_distancia(inicio: Optional[str] = None, fim: Optional[str] = None)
         {"faixa": faixa, "valor": float(val)}
         for faixa, val in valor.items()
     ]
+    
+    return {"dados": dados}
+
+@router.get("/pedidos-completo-por-distancia")
+def pedidos_completo_por_distancia(inicio: Optional[str] = None, fim: Optional[str] = None):
+    """
+    Retorna volume de pedidos, satisfação média e receita média por faixa de distância
+    """
+    df = load_data()
+    d_inicio_default, d_fim_default = _default_range()
+    d_inicio = _parse_date(inicio, d_inicio_default)
+    d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    
+    cur = _filter_period(df, d_inicio, d_fim)
+    
+    if len(cur) == 0 or 'distance_km' not in cur.columns:
+        return {"dados": []}
+    
+    # Filtrar registros com status entregue
+    if 'status' in cur.columns:
+        cur = cur[cur['status'].str.lower() == 'delivered']
+    
+    cur = cur.dropna(subset=['distance_km'])
+    
+    # Categorizar distâncias
+    cur['faixa_distancia'] = cur['distance_km'].apply(_categorizar_distancia)
+    
+    # Calcular todas as métricas por faixa
+    grouped = cur.groupby('faixa_distancia')
+    
+    volume = grouped.size().sort_index()
+    satisfacao_media = grouped['satisfacao_nivel'].mean().sort_index() if 'satisfacao_nivel' in cur.columns else pd.Series(dtype=float)
+    receita_media = grouped['total_brl'].mean().sort_index() if 'total_brl' in cur.columns else pd.Series(dtype=float)
+    
+    dados = []
+    for faixa in volume.index:
+        item = {
+            "faixa": faixa,
+            "pedidos": int(volume[faixa])
+        }
+        if faixa in satisfacao_media.index and pd.notna(satisfacao_media[faixa]):
+            item["satisfacao_media"] = float(satisfacao_media[faixa])
+        if faixa in receita_media.index and pd.notna(receita_media[faixa]):
+            item["receita_media"] = float(receita_media[faixa])
+        dados.append(item)
+    
+    return {"dados": dados}
+
+@router.get("/receita-ticket-por-distancia")
+def receita_ticket_por_distancia(inicio: Optional[str] = None, fim: Optional[str] = None):
+    """
+    Retorna receita total e ticket médio por faixa de distância
+    """
+    df = load_data()
+    d_inicio_default, d_fim_default = _default_range()
+    d_inicio = _parse_date(inicio, d_inicio_default)
+    d_fim = _parse_date(fim, d_fim_default)
+    d_inicio, d_fim = _normalize_range(d_inicio, d_fim)
+    
+    cur = _filter_period(df, d_inicio, d_fim)
+    
+    if len(cur) == 0 or 'distance_km' not in cur.columns:
+        return {"dados": []}
+    
+    # Filtrar registros com status entregue
+    if 'status' in cur.columns:
+        cur = cur[cur['status'].str.lower() == 'delivered']
+    
+    cur = cur.dropna(subset=['distance_km', 'total_brl'])
+    
+    # Categorizar distâncias
+    cur['faixa_distancia'] = cur['distance_km'].apply(_categorizar_distancia)
+    
+    # Calcular receita total e ticket médio por faixa
+    grouped = cur.groupby('faixa_distancia')
+    
+    receita_total = grouped['total_brl'].sum().sort_index()
+    ticket_medio = grouped['total_brl'].mean().sort_index()
+    
+    dados = []
+    for faixa in receita_total.index:
+        item = {
+            "faixa": faixa,
+            "receita": float(receita_total[faixa])
+        }
+        if faixa in ticket_medio.index and pd.notna(ticket_medio[faixa]):
+            item["ticket_medio"] = float(ticket_medio[faixa])
+        dados.append(item)
     
     return {"dados": dados}
 
